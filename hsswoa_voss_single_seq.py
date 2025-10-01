@@ -1,0 +1,423 @@
+
+
+
+!pip install biopython
+
+import math
+import time
+import random
+import numpy as np
+from scipy import signal
+from statistics import mean
+from Bio import SeqIO, Entrez
+from sklearn.metrics import auc
+import matplotlib.pyplot as plt
+
+Entrez.email = "Your.Name.Here@example.org"
+handle = Entrez.efetch(db = 'nucleotide', id = 'AF348412.2', rettype = 'fasta', retmode = 'text')
+record = SeqIO.read(handle, 'fasta')
+sample_dna = record.seq
+record.description
+
+#MATLAB CDS = [928, 1039, 2528, 2857, 4114, 4377, 5465, 5644, 7255, 7605]
+cds = list(range(1085, 1190)) + list(range(2795, 2937)) + list(range(3008, 3655)) + list(range(3735,3872))+ list(range(3959, 4096)) + list(range(4254, 4315)) + list(range(4443,4716))
+ncds = list(range(0, 1084)) + list(range(1191, 2794)) + list(range(2938, 3007)) + list(range(3656, 3734)) + list(range(3873,3958)) + list(range(4097, 4253)) + list(range(4316, 4442)) + list(range(4717,7256)) 
+
+#sample_dna = sample_dna(7021:15020)
+#sample_dna = sample_dna[7020:15020]
+
+actual_exons = np.zeros(len(sample_dna))
+
+for i in cds:
+    actual_exons[i] = 1
+
+def voss_mapping(dna_sequence):
+    xA, xT, xC, xG = np.zeros(len(dna_sequence)), np.zeros(len(dna_sequence)), np.zeros(len(dna_sequence)), np.zeros(len(dna_sequence))
+    for i in range(len(dna_sequence)):
+        if dna_sequence[i] == 'A':
+            xA[i], xT[i], xC[i], xG[i] = 1, 0, 0, 0
+        elif dna_sequence[i] == 'T':
+            xA[i], xT[i], xC[i], xG[i] = 0, 1, 0, 0
+        elif dna_sequence[i] == 'C':
+            xA[i], xT[i], xC[i], xG[i] = 0, 0, 1, 0
+        elif dna_sequence[i] == 'G':
+            xA[i], xT[i], xC[i], xG[i] = 0, 0, 0, 1
+    return xA, xT, xC, xG
+
+#def hydration_enthalpy_mapping(dna_sequence):
+    #numeric_sequence = np.zeros(len(dna_sequence))
+    #for i in range(len(dna_sequence)):
+        #if dna_sequence[i] == 'A':
+           # numeric_sequence[i] = -39.28
+        #elif dna_sequence[i] == 'T':
+           # numeric_sequence[i] = -40.63
+       # elif dna_sequence[i] == 'C':
+           # numeric_sequence[i] = -40.58
+       # elif dna_sequence[i] == 'G':
+           # numeric_sequence[i] = -47.99
+    #return numeric_sequence
+
+
+
+desiredFilter_w, desiredFilter_h = np.arange(0, 1, 0.001, dtype = float), np.zeros(1000, dtype=float)
+desiredFilter_h[667] = 1
+
+fig_1, ax = plt.subplots(figsize = [12.8, 7.2], dpi = 100)
+plt.title('Ideal Period-3 Impulse Response', fontsize=15, pad=12)
+plt.xlabel('Normalized Frequency $(w / \pi)$', fontsize=12, labelpad=5)
+plt.ylabel('Magnitude Response', fontsize=12, labelpad=5)
+plt.plot(desiredFilter_w, desiredFilter_h, color='r')
+#fig_1.savefig('test_1.jpg')
+
+
+# Objective Function 2 [Novel] [Dhabal]
+def objf(currentFilterPosition):
+    w, h = signal.freqz(currentFilterPosition, a = 1, worN = 1000, whole = False)
+    h = np.array(h)
+    h1 = abs(h)
+    Ep = (1 - h1[667]) ** 2
+    Es = np.sum(h1[0:666]) ** 2 + np.sum(h1[668:1000]) ** 2
+    error = 100 * Ep + 0.01 * Es
+    return error
+
+def SSAWOA(objf, lb, ub, dim, N, Max_iteration):
+
+    if not isinstance(lb, list):
+        lb = [lb] * dim
+    if not isinstance(ub, list):
+        ub = [ub] * dim
+
+    Convergence_curve = np.zeros(Max_iteration)
+
+    # Initialize the positions of salps
+    SalpPositions = np.zeros((N, dim))
+    for i in range(dim):
+        SalpPositions[:, i] = np.random.uniform(0, 1, N) * (ub[i] - lb[i]) + lb[i]
+    SalpFitness = np.full(N, float("inf"))
+
+    FoodPosition = np.zeros(dim)
+    FoodFitness = float("inf")
+
+    for i in range(0, N):
+        # evaluate moths
+        SalpFitness[i] = objf(SalpPositions[i, :])
+
+    sorted_salps_fitness = np.sort(SalpFitness)
+    I = np.argsort(SalpFitness)
+
+    Sorted_salps = np.copy(SalpPositions[I, :])
+
+    FoodPosition = np.copy(Sorted_salps[0, :])
+    FoodFitness = sorted_salps_fitness[0]
+
+    # initialize position vector and score for the leader
+    Leader_pos = np.zeros(dim)
+    Leader_score = float("inf")  # change this to -inf for maximization problems
+
+    # Initialize the positions of search agents
+    Positions = np.zeros((N, dim))
+    for i in range(dim):
+        Positions[:, i] = np.random.uniform(0, 1, N) * (ub[i] - lb[i]) + lb[i]
+
+    fitness = np.full(N, float("inf"))
+    # calculate fitness for all the population
+    for i in range(N):
+        particle_fitness = objf(Positions[i, :])
+        fitness[i] = particle_fitness
+
+        if particle_fitness < Leader_score:
+            Leader_score = particle_fitness
+            Leader_pos = Positions[i, :]
+
+    Iteration = 1
+    timerStart = time.time()
+
+    # Main loop
+    while Iteration < Max_iteration:
+
+        # Number of flames Eq. (3.14) in the paper
+        # Flame_no=round(N-Iteration*((N-1)/Max_iteration));
+
+        c1 = 2 * math.exp(-((4 * Iteration / Max_iteration) ** 2))
+        # Eq. (3.2) in the paper
+
+        for i in range(0, N):
+
+            SalpPositions = np.transpose(SalpPositions)
+
+            if i < N / 2:
+                for j in range(0, dim):
+                    c2 = random.random()
+                    c3 = random.random()
+                    # Eq. (3.1) in the paper
+                    if c3 < 0.5:
+                        SalpPositions[j, i] = FoodPosition[j] + c1 * (
+                            (ub[j] - lb[j]) * c2 + lb[j]
+                        )
+                    else:
+                        SalpPositions[j, i] = FoodPosition[j] - c1 * (
+                            (ub[j] - lb[j]) * c2 + lb[j]
+                        )
+
+                    ####################
+
+            elif i >= N / 2 and i < N + 1:
+                point1 = SalpPositions[:, i - 1]
+                point2 = SalpPositions[:, i]
+
+                SalpPositions[:, i] = (point2 + point1) / 2
+                # Eq. (3.4) in the paper
+
+            SalpPositions = np.transpose(SalpPositions)
+
+        a = 2 - Iteration * ((2) / Max_iteration)
+        # a decreases linearly fron 2 to 0 in Eq. (2.3)
+
+        # a2 linearly decreases from -1 to -2 to calculate t in Eq. (3.12)
+        a2 = -1 + Iteration * ((-1) / Max_iteration)
+
+        # Update the Position of search agents
+        for i in range(0, N):
+            r1 = random.random()  # r1 is a random number in [0,1]
+            r2 = random.random()  # r2 is a random number in [0,1]
+
+            A = 2 * a * r1 - a  # Eq. (2.3) in the paper
+            C = 2 * r2  # Eq. (2.4) in the paper
+
+            b = 1
+            #  parameters in Eq. (2.5)
+            l = (a2 - 1) * random.random() + 1  #  parameters in Eq. (2.5)
+
+            p = random.random()  # p in Eq. (2.6)
+
+            for j in range(0, dim):
+
+                if p < 0.5:
+                    if abs(A) >= 1:
+                        rand_leader_index = math.floor(
+                            N * random.random()
+                        )
+                        X_rand = Positions[rand_leader_index, :]
+                        D_X_rand = abs(C * X_rand[j] - Positions[i, j])
+                        Positions[i, j] = X_rand[j] - A * D_X_rand
+
+                    elif abs(A) < 1:
+                        D_Leader = abs(C * Leader_pos[j] - Positions[i, j])
+                        Positions[i, j] = Leader_pos[j] - A * D_Leader
+
+                elif p >= 0.5:
+
+                    distance2Leader = abs(Leader_pos[j] - Positions[i, j])
+                    # Eq. (2.5)
+                    Positions[i, j] = (
+                        distance2Leader * math.exp(b * l) * math.cos(l * 2 * math.pi)
+                        + Leader_pos[j]
+                    )
+
+        for i in range(0, N):
+
+            # Check if salps go out of the search spaceand bring it back
+            for j in range(dim):
+                SalpPositions[i, j] = np.clip(SalpPositions[i, j], lb[j], ub[j])
+                Positions[i, j] = np.clip(Positions[i, j], lb[j], ub[j])
+
+            SalpFitness[i] = objf(SalpPositions[i, :])
+            fitness[i] = objf(Positions[i, :])
+
+            if SalpFitness[i] < fitness[i]:
+                Positions[i, :] = np.copy(SalpPositions[i, :])
+                fitness[i] = SalpFitness[i]
+
+                if SalpFitness[i] < FoodFitness:
+                    FoodPosition = np.copy(SalpPositions[i, :])
+                    FoodFitness = SalpFitness[i]
+
+            if fitness[i] < SalpFitness[i]:
+                SalpPositions[i, :] = np.copy(Positions[i, :])
+                SalpFitness[i] = fitness[i]
+
+                # Update the leader
+                if fitness[i] < Leader_score:  # Change this to > for maximization problem
+                    Leader_score = fitness[i]
+                    Leader_pos = Positions[i, :].copy()  # copy current whale position into the leader position
+
+        # Display best fitness along the iteration
+        if (Iteration + 1) % 100 == 0:
+            print(["At iteration " + str(Iteration + 1) + " the best fitness is " + str(Leader_score)])
+
+        Convergence_curve[Iteration] = Leader_score
+        Iteration = Iteration + 1
+
+    timerEnd = time.time()
+    timer = timerEnd - timerStart
+
+    return Leader_pos, Convergence_curve, timer
+
+#SSAWOA Format :- SSAWOA(Objective Function, Lower Boundary, Upper Boundary, Dimension, Population Size, Iterations)
+filter_weights, Optimization_error, Execution_time = SSAWOA(objf, -1, 1, 257, 50, 2500)
+
+temp_x, temp_y = signal.freqz(filter_weights, a = 1, worN = 1000, whole = False)
+
+fig_2, ax = plt.subplots(figsize = [12.8, 7.2], dpi = 600)
+plt.title('FIR Filter Response on Ideal Period-3 Impulse using SSAWOA', fontsize=15, pad=12)
+plt.xlabel('Normalized Frequency $(w / \pi)$', fontsize=12, labelpad=5)
+plt.ylabel('Magnitude Response', fontsize=12, labelpad=5)
+#plt.plot(temp_x / np.pi, 20 * np.log10(abs(temp_y)), color='b')
+plt.plot(desiredFilter_w, desiredFilter_h, color='r')
+plt.plot(temp_x / np.pi, abs(temp_y), color='b')
+#fig_2.savefig('test_2.jpg')
+
+#print("Optimization Error =",Optimization_error[len(Optimization_error) - 1])
+#print("Execution Time (sec) =",Execution_time)
+
+ObtainedFilter_w, ObtainedFilter_h = signal.freqz(filter_weights, a = 1, worN = 1000, whole = False)
+ObtainedFilter_h = np.array(abs(ObtainedFilter_h))
+Passband_ripple, Stopband_ripple = abs(ObtainedFilter_h[667] - 1), np.sum(ObtainedFilter_h[0:666]) + np.sum(ObtainedFilter_h[668:1000])
+
+print("Passband Ripple Magnitude =",Passband_ripple), print("Stopband Ripple Magnitude =",Stopband_ripple)
+Passband_ripple, Stopband_ripple = 20 * np.log10(abs(Passband_ripple)), 20 * np.log10(abs(Stopband_ripple))
+print("Passband Ripple Magnitude(dB) =",Passband_ripple), print("Stopband Ripple Magnitude(dB) =",Stopband_ripple)
+
+Total_ripple = Passband_ripple + Stopband_ripple
+print("Total Ripple Magnitude(dB) =",Total_ripple)
+
+length = 10
+left_length, right_length = length - np.argmin(ObtainedFilter_h[(667 - length):667]), np.argmin(ObtainedFilter_h[667:(667 + length)])
+left_transition, right_transition = ObtainedFilter_w[667] - ObtainedFilter_w[667 - left_length], ObtainedFilter_w[667 + right_length] - ObtainedFilter_w[667]
+transition_width = left_transition + right_transition
+print("Transition Width =",transition_width)
+
+#mapped_dna = hydration_enthalpy_mapping(sample_dna)
+#u = signal.filtfilt(filter_weights, 1, mapped_dna)
+#Y = abs(u) ** 2
+
+#polyorder, window_length = 7, 87
+
+#Z = signal.savgol_filter(Y, window_length, polyorder)
+#P = Z / max(Z)
+
+xA, xT, xC, xG = voss_mapping(sample_dna)
+
+u_A, u_T = signal.filtfilt(filter_weights, 1, xA), signal.filtfilt(filter_weights, 1, xT) 
+u_C, u_G = signal.filtfilt(filter_weights, 1, xC), signal.filtfilt(filter_weights, 1, xG)
+Y_A, Y_T, Y_C, Y_G = abs(u_A) ** 2, abs(u_T) ** 2, abs(u_C) ** 2, abs(u_G) ** 2
+Y = Y_A + Y_T + Y_C + Y_G
+
+polyorder, window_length = 7, 87
+Z_A, Z_T = signal.savgol_filter(Y_A, window_length, polyorder), signal.savgol_filter(Y_T, window_length, polyorder)
+Z_C, Z_G = signal.savgol_filter(Y_C, window_length, polyorder), signal.savgol_filter(Y_G, window_length, polyorder)
+
+Z = Z_A + Z_T + Z_C + Z_G
+P = Z / max(Z)
+
+noisy_response = Y
+filtered_response = Z
+
+square_error = np.sum((noisy_response - filtered_response) ** 2)
+mean_square_error = square_error / len(filtered_response)
+
+absolute_error = np.sum(np.absolute(noisy_response - filtered_response))
+mean_absolute_error = absolute_error / len(filtered_response)
+
+print('Mean Square Error =', mean_square_error)
+print('Mean Absolute Error =', mean_absolute_error)
+
+SNR = 20 * np.log10(math.sqrt(np.sum(filtered_response ** 2)) / math.sqrt(square_error))
+PSNR= 20 * np.log10(max(filtered_response) / math.sqrt(mean_square_error))
+
+print('SNR =', SNR)
+print('PSNR =', PSNR)
+
+fig_3, ax = plt.subplots(figsize = [12.8, 7.2], dpi = 100)
+#plt.title('Detection of Period-3 using FIR Filter with SSA + WOA', fontsize=15, pad=12)
+plt.ylabel('Normalised Period-3 Power spectrum', fontsize=14, fontname= 'Times New Roman', labelpad=5)
+plt.xlabel('Relative Base location (bp)', fontsize = 14, fontname = 'Times New Roman', labelpad = 5)
+#plt.plot(np.full(7300, 0.2), alpha = 0.5, linewidth = 0.5, color='r')
+plt.plot(P, linewidth=1, color='b')
+plt.plot(actual_exons, color='g')
+plt.grid(False)
+fig_3.savefig('psd_3.jpg')
+
+Threshold_Values = np.linspace(0, 1, num=101, endpoint = True)
+TPR_Values, FPR_Values, PPV_Values = np.zeros(len(Threshold_Values)), np.zeros(len(Threshold_Values)), np.zeros(len(Threshold_Values))
+
+for k in range(len(Threshold_Values)):
+    TP, FN, FP, TN, Threshold = np.zeros(8000), np.zeros(8000), np.zeros(8000), np.zeros(8000), Threshold_Values[k]
+    for i in cds:
+        if (P[i] >= Threshold):
+            TP[i] = 1
+        if (P[i] < Threshold):
+            FN[i] = 1
+    for i in ncds:
+        if (P[i] >= Threshold):
+            FP[i] = 1
+        if (P[i] < Threshold):
+            TN[i] = 1
+    if Threshold == 0.2:
+        true_positive, false_negative, false_positive, true_negative = np.sum(TP), np.sum(FN), np.sum(FP), np.sum(TN)
+    TP, FN, FP, TN = np.sum(TP), np.sum(FN), np.sum(FP), np.sum(TN)
+    TPR_Values[k] = TP / (TP + FN)
+    FPR_Values[k] = FP / (FP + TN)
+    PPV_Values[k] = TP / (TP + FP)
+
+auc_value = auc(FPR_Values, TPR_Values)
+print('Area Under The ROC Curve =', auc_value)
+
+aupr_value = auc(TPR_Values, PPV_Values)
+print('Area Under The Precision-Recall Curve =', aupr_value)
+
+TP, FN, FP, TN = true_positive, false_negative, false_positive, true_negative
+
+TPR, TNR, PPV, ACC = TP / (TP + FN), TN / (FP + TN), TP / (TP + FP), (TP + TN) / (TP + FP + TN + FN)
+MCC = (TP * TN - FN * FP) / (((TP + FN) * (TN + FP) * (TP + FP) * (TN + FN)) ** (1/2))
+ACP = (TP / (TP + FN) + TP / (TP + FP) + TN / (TN + FP) + TN / (TN + FN)) / 4
+AC = (ACP - 0.5) * 2
+
+exon_energy, intron_energy = [], []
+for i in cds:
+    exon_energy.append(P[i])
+for i in ncds:
+    intron_energy.append(P[i])
+
+SNR1, SNR2 = sum(exon_energy)/sum(intron_energy), max(P) / mean(P)
+
+print('SNR1 =', SNR1)
+print('SNR2 =', SNR2)
+print("Approximate Correlation =", AC)
+print('Accuracy of Exon Classification =', ACC)
+print('True Positive Rate (Sensitiviy) =', TPR)
+print('True Negative Rate (Specificity) =', TNR)
+print('Matthews Correlation Coefficient = ', MCC), 
+print('Positive Predictive Value (Precision) =',PPV)
+print("Approximate Correlation =", AC)
+
+fig_4, ax = plt.subplots(figsize = [12.8, 7.2], dpi = 600)
+#plt.title('ROC Plot of Gene AF099922 Using SSA + WOA', fontsize = 15, pad = 12)
+plt.tick_params(grid_color = 'r', grid_alpha = 0.15, grid_linewidth = 1)
+plt.plot(FPR_Values, TPR_Values, linewidth = 1.5, color = 'b', label=f"ROC curve (AUC = {auc_value:.3f})")
+plt.plot([0, 1], [0, 1], color="green", linestyle="--")
+plt.text(0.5, 0.5, f"AUC = {auc_value:.3f}",
+         color="black", fontsize=12, fontname="Times New Roman",
+         rotation=45, ha="center", va="center", rotation_mode="anchor")
+plt.xlabel('False Positive Rate', fontsize = 14, fontname = 'Times New Roman', labelpad = 5)
+plt.ylabel('True Positive Rate', fontsize = 14, fontname = 'Times New Roman',  labelpad = 5)
+#plt.grid(True, linestyle='--', axis='both')
+plt.grid(False)
+fig_4.savefig('roc_4.jpg')
+
+fig_5, ax = plt.subplots(figsize = [12.8, 7.2], dpi = 100)
+plt.title('Precision-Recall Curve of Gene AF099922 Using SSA + WOA', fontsize = 15, pad = 12)
+plt.tick_params(grid_color = 'r', grid_alpha = 0.15, grid_linewidth = 1)
+plt.plot(TPR_Values, PPV_Values, linewidth = 1.5, color = 'b')
+plt.ylabel('Positive Predictive Value (Precision)', fontsize = 12, labelpad = 5)
+plt.xlabel('True Positive Rate (Recall)', fontsize = 12, labelpad = 5)
+plt.grid(True, linestyle='--', axis='both')
+#fig_5.savefig('test_5.jpg')
+
+Threshold, result_cds = 0.2, []
+
+for i in range(len(P)):
+    if (P[i] >= Threshold):
+        result_cds.append(i)
+
+print(result_cds)
